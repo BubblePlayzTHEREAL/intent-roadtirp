@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Internet Road Trip</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── API key setup screen ─────────────────────────────────────────── -->
+  <div id="config-screen">
+    <div class="config-card">
+      <h1>🚗 Internet Road Trip</h1>
+      <p>
+        A private, self-hosted virtual road trip powered by Google Street View.<br />
+        Enter your Google Maps API key to start driving.
+      </p>
+      <input
+        id="api-key-input"
+        type="text"
+        placeholder="AIzaSy…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="config-error" id="config-error"></div>
+      <button id="start-btn">Start Trip 🛣️</button>
+      <p class="hint">
+        Need a key?
+        <a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank" rel="noopener">
+          Get one free at Google Cloud Console
+        </a>
+        (enable Maps JavaScript API + Street View Static API + Geocoding API).
+        Your key is only stored in your browser's localStorage and never sent anywhere except Google.
+      </p>
+    </div>
+  </div>
+
+  <!-- ── Main app (hidden until key is set) ───────────────────────────── -->
+  <div id="app" class="hidden">
+
+    <!-- Full-screen Street View container -->
+    <div id="panorama"></div>
+
+    <!-- Top-left: location name -->
+    <div id="location-overlay">
+      <div id="location-flag"></div>
+      <div id="location-text">
+        <div id="location-name">Loading…</div>
+        <div id="location-sub"></div>
+      </div>
+    </div>
+
+    <!-- Bottom-right: mini-map -->
+    <div id="mini-map"></div>
+
+    <!-- Bottom-center: controls -->
+    <div id="controls">
+      <button id="pause-btn" title="Pause / Resume">⏸</button>
+      <div class="speed-wrap">
+        <span class="speed-label">Slow</span>
+        <input id="speed-slider" type="range" min="1" max="5" value="3" step="1" />
+        <span class="speed-label">Fast</span>
+      </div>
+      <button id="new-trip-btn" title="Start a new random trip">🗺 New Trip</button>
+      <button id="settings-btn" title="Change API key">⚙️</button>
+    </div>
+
+    <!-- Distance / steps travelled -->
+    <div id="stats">
+      <span id="steps-count">0</span> steps
+    </div>
+
+  </div>
+
+  <!-- Google Maps API is loaded dynamically once we have the key -->
+  <script src="app.js"></script>
+</body>
+</html>
