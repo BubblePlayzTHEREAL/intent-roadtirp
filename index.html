@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Internet Road Trip</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
 
@@ -13,25 +14,26 @@
     <div class="config-card">
       <h1>🚗 Internet Road Trip</h1>
       <p>
-        A private, self-hosted virtual road trip powered by Google Street View.<br />
-        Enter your Google Maps API key to start driving.
+        A private, self-hosted virtual road trip powered by Mapillary street-level imagery.<br />
+        Enter your free Mapillary client token to start driving.
       </p>
       <input
         id="api-key-input"
         type="text"
-        placeholder="AIzaSy…"
+        placeholder="MLY|…"
         autocomplete="off"
         spellcheck="false"
       />
       <div class="config-error" id="config-error"></div>
       <button id="start-btn">Start Trip 🛣️</button>
       <p class="hint">
-        Need a key?
-        <a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank" rel="noopener">
-          Get one free at Google Cloud Console
+        Need a token?
+        <a href="https://www.mapillary.com/developer" target="_blank" rel="noopener">
+          Create a free app at mapillary.com/developer
         </a>
-        (enable Maps JavaScript API + Street View Static API + Geocoding API).
-        Your key is only stored in your browser's localStorage and never sent anywhere except Google.
+        — sign up with an email, make an application, and copy the <strong>Client Token</strong>.
+        No credit card required.
+        Your token is only stored in your browser's localStorage.
       </p>
     </div>
   </div>
@@ -73,7 +75,7 @@
 
   </div>
 
-  <!-- Google Maps API is loaded dynamically once we have the key -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

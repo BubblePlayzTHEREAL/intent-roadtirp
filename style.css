@@ -116,10 +116,21 @@ html, body {
 #panorama {
   width: 100%;
   height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #1a1a2e;
 }
 
-/* Remove Google Street View default UI we don't need */
-#panorama :global(.gm-style) { cursor: default !important; }
+/* Leaflet attribution – styled to fit dark theme (required by OSM/CARTO terms) */
+.leaflet-control-attribution {
+  background: rgba(0, 0, 0, 0.45) !important;
+  color: #666 !important;
+  font-size: 0.65rem !important;
+}
+.leaflet-control-attribution a {
+  color: #888 !important;
+}
 
 /* ── Location overlay (top-left) ─────────────────────────────────────── */
 #location-overlay {
