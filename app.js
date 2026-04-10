@@ -1,28 +1,31 @@
 /**
  * Internet Road Trip – app.js
  *
- * A private, self-hosted recreation of the neal.fun/internet-roadtrip experience.
- * Uses the Google Maps JavaScript API (Street View + Geocoding + Maps).
+ * A private, self-hosted virtual road trip using only free APIs:
+ *   • Mapillary  – street-level imagery (free account, no credit card)
+ *   • Leaflet + CartoDB/OSM tiles – mini-map (no key required)
+ *   • Nominatim  – reverse geocoding (no key required)
  *
  * Flow:
- *  1. Ask the user for a Google Maps API key (stored in localStorage).
- *  2. Dynamically load the Google Maps script with that key.
- *  3. Pick a random starting location from a curated list of roads.
- *  4. Auto-drive forward by following Street View navigation links.
- *  5. Reverse-geocode each new position and update the location overlay.
- *  6. Plot the route on a mini-map.
+ *  1. Ask the user for a Mapillary client token (stored in localStorage).
+ *  2. Pick a random starting location from a curated list of roads.
+ *  3. Find a nearby Mapillary image and its sequence.
+ *  4. Auto-drive forward through the sequence, displaying each image.
+ *  5. Reverse-geocode each new position with Nominatim.
+ *  6. Plot the route on a Leaflet mini-map.
  */
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
-const LS_KEY = 'irt_gmaps_key';
+const LS_KEY          = 'irt_mapillary_key';
+const MAPILLARY_BASE  = 'https://graph.mapillary.com';
+const NOMINATIM_BASE  = 'https://nominatim.openstreetmap.org';
 
 // Speed steps: value → milliseconds between panorama hops
 const SPEED_DELAY = { 1: 6000, 2: 4000, 3: 2500, 4: 1500, 5: 800 };
 
 /**
- * Curated starting panorama IDs / LatLngs spread across every continent.
- * Each entry has { pano } (Street View pano ID) or { lat, lng } (fallback).
+ * Curated starting LatLngs spread across every continent.
  */
 const STARTING_LOCATIONS = [
   // North America
@@ -61,40 +64,44 @@ const STARTING_LOCATIONS = [
 
 /* ── DOM references ───────────────────────────────────────────────────── */
 
-const configScreen   = document.getElementById('config-screen');
-const apiKeyInput    = document.getElementById('api-key-input');
-const configError    = document.getElementById('config-error');
-const startBtn       = document.getElementById('start-btn');
-const appEl          = document.getElementById('app');
-const locationFlag   = document.getElementById('location-flag');
-const locationName   = document.getElementById('location-name');
-const locationSub    = document.getElementById('location-sub');
-const pauseBtn       = document.getElementById('pause-btn');
-const speedSlider    = document.getElementById('speed-slider');
-const newTripBtn     = document.getElementById('new-trip-btn');
-const settingsBtn    = document.getElementById('settings-btn');
-const stepsCount     = document.getElementById('steps-count');
+const configScreen = document.getElementById('config-screen');
+const apiKeyInput  = document.getElementById('api-key-input');
+const configError  = document.getElementById('config-error');
+const startBtn     = document.getElementById('start-btn');
+const appEl        = document.getElementById('app');
+const panoramaEl   = document.getElementById('panorama');
+const locationFlag = document.getElementById('location-flag');
+const locationName = document.getElementById('location-name');
+const locationSub  = document.getElementById('location-sub');
+const pauseBtn     = document.getElementById('pause-btn');
+const speedSlider  = document.getElementById('speed-slider');
+const newTripBtn   = document.getElementById('new-trip-btn');
+const settingsBtn  = document.getElementById('settings-btn');
+const stepsCount   = document.getElementById('steps-count');
 
 /* ── State ────────────────────────────────────────────────────────────── */
 
-let panorama       = null;   // google.maps.StreetViewPanorama
-let miniMap        = null;   // google.maps.Map
-let routePath      = null;   // google.maps.Polyline
-let routeMarker    = null;   // google.maps.Marker (current position dot)
-let geocoder       = null;   // google.maps.Geocoder
-let driveTimer     = null;   // setInterval handle
-let paused         = false;
-let steps          = 0;
-let currentHeading = 0;      // degrees – used to pick the "forward" link
-let routeCoords    = [];     // LatLng[] of visited positions
+let mapillaryKey    = '';
+let miniMap         = null;   // Leaflet Map
+let routePolyline   = null;   // Leaflet Polyline
+let routeMarker     = null;   // Leaflet Marker
+let driveTimer      = null;   // setTimeout handle
+let paused          = false;
+let steps           = 0;
+let routeCoords     = [];     // [lat, lng][] of visited positions
+
+let sequenceImages  = [];     // ordered Mapillary image IDs for current sequence
+let sequenceIndex   = 0;      // current position in sequenceImages
+let imageCache      = {};     // imageId → { url, lat, lng }
+let lastGeocodeTime = 0;      // timestamp of last Nominatim request
+let tripId          = 0;      // increments on each startTrip(); cancels stale async ops
+let controlsReady   = false;
 
 /* ── Entry point ──────────────────────────────────────────────────────── */
 
 (function init() {
   const savedKey = localStorage.getItem(LS_KEY);
-  if (savedKey) {
-    apiKeyInput.value = savedKey;
-  }
+  if (savedKey) apiKeyInput.value = savedKey;
 
   startBtn.addEventListener('click', handleStartClick);
   apiKeyInput.addEventListener('keydown', (e) => {
@@ -105,51 +112,32 @@ let routeCoords    = [];     // LatLng[] of visited positions
 function handleStartClick() {
   const key = apiKeyInput.value.trim();
   if (!key) {
-    configError.textContent = 'Please enter a valid API key.';
+    configError.textContent = 'Please enter your Mapillary client token.';
     return;
   }
   configError.textContent = '';
-  // The API key is a browser-side credential that must be sent to Google with
-  // every Maps API request anyway; storing it locally avoids re-entry on reload.
   // lgtm[js/clear-text-storage-of-sensitive-data]
   localStorage.setItem(LS_KEY, key);
-  loadGoogleMaps(key);
-}
+  mapillaryKey = key;
 
-/* ── Load Google Maps SDK dynamically ─────────────────────────────────── */
-
-function loadGoogleMaps(apiKey) {
-  startBtn.disabled = true;
-  startBtn.textContent = 'Loading…';
-
-  const script = document.createElement('script');
-  script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=onMapsReady&libraries=geometry`;
-  script.async = true;
-  script.onerror = () => {
-    startBtn.disabled = false;
-    startBtn.textContent = 'Start Trip 🛣️';
-    configError.textContent = 'Failed to load Google Maps. Check your API key and internet connection.';
-  };
-  document.head.appendChild(script);
-}
-
-/* Called by Google Maps SDK once loaded */
-window.onMapsReady = function () {
   configScreen.classList.add('hidden');
   appEl.classList.remove('hidden');
-  setupControls();
+
+  if (!controlsReady) {
+    setupControls();
+    controlsReady = true;
+  }
+  if (!miniMap) initMiniMap();
+
   startTrip();
-};
+}
 
 /* ── Controls wiring ──────────────────────────────────────────────────── */
 
 function setupControls() {
   pauseBtn.addEventListener('click', togglePause);
   speedSlider.addEventListener('input', restartTimer);
-  newTripBtn.addEventListener('click', () => {
-    stopTimer();
-    startTrip();
-  });
+  newTripBtn.addEventListener('click', () => { stopTimer(); startTrip(); });
   settingsBtn.addEventListener('click', () => {
     stopTimer();
     appEl.classList.add('hidden');
@@ -171,103 +159,160 @@ function stopTimer() {
 }
 
 function restartTimer() {
-  if (!paused) {
-    stopTimer();
-    scheduleNextHop();
-  }
+  if (!paused) { stopTimer(); scheduleNextHop(); }
+}
+
+/* ── Mini-map (Leaflet + OpenStreetMap) ───────────────────────────────── */
+
+function initMiniMap() {
+  miniMap = L.map('mini-map', {
+    zoomControl:       false,
+    attributionControl: false,
+    dragging:          false,
+    scrollWheelZoom:   false,
+    doubleClickZoom:   false,
+    keyboard:          false,
+    tap:               false,
+  });
+
+  // CartoDB Dark Matter tiles – free, no API key needed
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom:    19,
+    subdomains: 'abcd',
+  }).addTo(miniMap);
+
+  routePolyline = L.polyline([], {
+    color:   '#63b3ed',
+    opacity: 0.9,
+    weight:  3,
+  }).addTo(miniMap);
+
+  const markerIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:14px;height:14px;background:#f6e05e;border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.5)"></div>',
+    iconSize:   [14, 14],
+    iconAnchor: [7, 7],
+  });
+  routeMarker = L.marker([0, 0], { icon: markerIcon }).addTo(miniMap);
 }
 
 /* ── Trip lifecycle ───────────────────────────────────────────────────── */
 
-function startTrip() {
+async function startTrip() {
+  const myTripId = ++tripId;
+
   steps          = 0;
-  currentHeading = 0;
+  sequenceImages = [];
+  sequenceIndex  = 0;
   routeCoords    = [];
-  stepsCount.textContent = '0';
+  imageCache     = {};
+  stepsCount.textContent   = '0';
   locationName.textContent = 'Loading…';
   locationName.classList.add('loading');
   locationSub.textContent  = '';
   locationFlag.textContent = '';
   paused = false;
   pauseBtn.textContent = '⏸';
+  panoramaEl.style.backgroundImage = '';
+
+  if (routePolyline) routePolyline.setLatLngs([]);
 
   const start = STARTING_LOCATIONS[Math.floor(Math.random() * STARTING_LOCATIONS.length)];
 
-  if (!geocoder) geocoder = new google.maps.Geocoder();
+  try {
+    const image = await findNearbyImage(start.lat, start.lng, myTripId);
+    if (!image || myTripId !== tripId) return;
 
-  // ── Street View panorama ──
-  if (!panorama) {
-    panorama = new google.maps.StreetViewPanorama(
-      document.getElementById('panorama'),
-      {
-        pov:             { heading: 0, pitch: 0 },
-        zoom:            0,
-        addressControl:  false,
-        showRoadLabels:  false,
-        clickToGo:       false,
-        disableDefaultUI: true,
-        motionTracking:  false,
-      }
-    );
+    sequenceImages = await getSequenceImages(image.sequence, myTripId);
+    if (myTripId !== tripId) return;
+
+    sequenceIndex = sequenceImages.indexOf(image.id);
+    if (sequenceIndex === -1) sequenceIndex = 0;
+
+    // Pre-fetch next few image details in the background
+    prefetchBatch(sequenceIndex, 5);
+
+    await showImage(sequenceImages[sequenceIndex], myTripId);
+    if (myTripId !== tripId) return;
+
+    scheduleNextHop();
+  } catch (err) {
+    if (myTripId !== tripId) return;
+    console.error('Trip start error:', err);
+    setTimeout(startTrip, 3000);
   }
+}
 
-  // ── Mini-map ──
-  if (!miniMap) {
-    miniMap = new google.maps.Map(document.getElementById('mini-map'), {
-      zoom:             5,
-      center:           { lat: start.lat, lng: start.lng },
-      mapTypeId:        'roadmap',
-      disableDefaultUI: true,
-      gestureHandling:  'none',
-      styles: darkMapStyles(),
-    });
+/* ── Mapillary API helpers ────────────────────────────────────────────── */
 
-    routePath = new google.maps.Polyline({
-      map:          miniMap,
-      strokeColor:  '#63b3ed',
-      strokeOpacity: 0.9,
-      strokeWeight:  3,
-    });
+async function mapillaryFetch(url, myTripId) {
+  const resp = await fetch(url);
 
-    routeMarker = new google.maps.Marker({
-      map:  miniMap,
-      icon: {
-        path:        google.maps.SymbolPath.CIRCLE,
-        scale:       7,
-        fillColor:   '#f6e05e',
-        fillOpacity: 1,
-        strokeColor: '#fff',
-        strokeWeight: 2,
-      },
-    });
-  } else {
-    // Reset route for new trip
-    routePath.setPath([]);
-    routeMarker.setPosition({ lat: start.lat, lng: start.lng });
-    miniMap.setCenter({ lat: start.lat, lng: start.lng });
-    miniMap.setZoom(5);
-  }
-
-  // Position the panorama at the starting location
-  const sv = new google.maps.StreetViewService();
-  sv.getPanorama(
-    { location: { lat: start.lat, lng: start.lng }, radius: 2000, source: google.maps.StreetViewSource.OUTDOOR },
-    (data, status) => {
-      if (status !== google.maps.StreetViewStatus.OK) {
-        // Try a different start if this one has no coverage
-        console.warn('No Street View at', start.label, '– trying another location');
-        startTrip();
-        return;
-      }
-      panorama.setPano(data.location.pano);
-      panorama.setPov({ heading: randomHeading(), pitch: 0 });
-
-      const pos = data.location.latLng;
-      updateRoute(pos);
-      reverseGeocode(pos);
-      scheduleNextHop();
+  if (resp.status === 401) {
+    if (!myTripId || myTripId === tripId) {
+      configError.textContent = 'Invalid Mapillary token – please check your key.';
+      appEl.classList.add('hidden');
+      configScreen.classList.remove('hidden');
+      startBtn.disabled = false;
+      startBtn.textContent = 'Start Trip 🛣️';
     }
-  );
+    throw new Error('Unauthorized');
+  }
+
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+async function findNearbyImage(lat, lng, myTripId, attempt = 1) {
+  const delta = 0.02 * attempt; // ~2 km at attempt 1, grows with retries
+  const bbox  = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
+  const url   = `${MAPILLARY_BASE}/images?fields=id,sequence,geometry&bbox=${bbox}&limit=20&access_token=${encodeURIComponent(mapillaryKey)}`;
+
+  const data = await mapillaryFetch(url, myTripId);
+
+  if (!data.data || data.data.length === 0) {
+    if (attempt < 7) return findNearbyImage(lat, lng, myTripId, attempt + 1);
+    console.warn('No Mapillary coverage near', lat, lng);
+    return null;
+  }
+
+  // Pick a random image from the first few results to vary the start point
+  return data.data[Math.floor(Math.random() * Math.min(data.data.length, 5))];
+}
+
+async function getSequenceImages(sequenceId, myTripId) {
+  const url  = `${MAPILLARY_BASE}/image_ids?sequence_id=${encodeURIComponent(sequenceId)}&access_token=${encodeURIComponent(mapillaryKey)}`;
+  const data = await mapillaryFetch(url, myTripId);
+  return (data.data || []).map(item => item.id);
+}
+
+async function fetchImageDetails(imageId) {
+  if (imageCache[imageId]) return imageCache[imageId];
+
+  const url  = `${MAPILLARY_BASE}/${encodeURIComponent(imageId)}?fields=thumb_2048_url,geometry&access_token=${encodeURIComponent(mapillaryKey)}`;
+  const data = await mapillaryFetch(url);
+
+  const [lng, lat] = data.geometry.coordinates;
+  const details = { url: data.thumb_2048_url, lat, lng };
+  imageCache[imageId] = details;
+  return details;
+}
+
+function prefetchBatch(fromIndex, count) {
+  const end = Math.min(fromIndex + count, sequenceImages.length);
+  for (let i = fromIndex; i < end; i++) {
+    const id = sequenceImages[i];
+    if (!imageCache[id]) fetchImageDetails(id).catch(() => {});
+  }
+}
+
+async function showImage(imageId, myTripId) {
+  const details = await fetchImageDetails(imageId);
+  if (myTripId && myTripId !== tripId) return;
+
+  panoramaEl.style.backgroundImage = `url('${details.url}')`;
+  updateRoute([details.lat, details.lng]);
+  reverseGeocode(details.lat, details.lng);
 }
 
 /* ── Auto-drive ───────────────────────────────────────────────────────── */
@@ -279,149 +324,78 @@ function scheduleNextHop() {
   driveTimer = setTimeout(driveOneStep, delay);
 }
 
-function driveOneStep() {
-  if (!panorama) return;
+async function driveOneStep() {
+  const myTripId = tripId;
 
-  const links = panorama.getLinks();
-  if (!links || links.length === 0) {
-    // Dead end – start a new trip from a fresh random location
-    console.info('Dead end reached, starting a new trip');
+  sequenceIndex++;
+  if (sequenceIndex >= sequenceImages.length) {
+    console.info('End of sequence – starting new trip');
     startTrip();
     return;
   }
 
-  // Choose the link whose heading is closest to our current direction,
-  // avoiding sharp U-turns (> 150°).
-  const forward = bestLink(links, currentHeading);
-  if (!forward) {
-    startTrip();
-    return;
-  }
+  // Pre-fetch upcoming images while driving
+  prefetchBatch(sequenceIndex + 1, 5);
 
-  currentHeading = forward.heading;
-  panorama.setPov({ heading: forward.heading, pitch: 0 });
-  panorama.setPano(forward.pano);
-
-  // Wait a tick for the panorama to update its position
-  google.maps.event.addListenerOnce(panorama, 'position_changed', () => {
-    const pos = panorama.getPosition();
-    if (!pos) { scheduleNextHop(); return; }
-
+  try {
+    await showImage(sequenceImages[sequenceIndex], myTripId);
+    if (myTripId !== tripId) return;
     steps++;
     stepsCount.textContent = steps.toLocaleString();
-    updateRoute(pos);
-    reverseGeocode(pos);
-    scheduleNextHop();
-  });
-}
-
-/**
- * Pick the Street View link whose heading is closest to `currentHeading`,
- * but reject any link that would require a near-U-turn (diff > 150°).
- */
-function bestLink(links, heading) {
-  let best     = null;
-  let bestDiff = Infinity;
-
-  for (const link of links) {
-    if (!link || link.pano == null) continue;
-    const diff = headingDiff(link.heading, heading);
-    if (diff < bestDiff && diff <= 150) {
-      bestDiff = diff;
-      best     = link;
-    }
+  } catch (err) {
+    if (myTripId !== tripId) return;
+    console.error('Hop error:', err);
   }
 
-  // If every link is a U-turn, just take the least-bad option
-  if (!best) {
-    for (const link of links) {
-      if (!link || link.pano == null) continue;
-      const diff = headingDiff(link.heading, heading);
-      if (diff < bestDiff) { bestDiff = diff; best = link; }
-    }
-  }
-
-  return best;
-}
-
-/** Smallest angle between two headings (0–180) */
-function headingDiff(a, b) {
-  const diff = Math.abs(((a - b) + 360) % 360);
-  return diff > 180 ? 360 - diff : diff;
-}
-
-function randomHeading() {
-  return Math.floor(Math.random() * 360);
+  if (myTripId === tripId) scheduleNextHop();
 }
 
 /* ── Route tracking ───────────────────────────────────────────────────── */
 
 function updateRoute(latLng) {
   routeCoords.push(latLng);
-  if (routePath) routePath.setPath(routeCoords);
-  if (routeMarker) {
-    routeMarker.setPosition(latLng);
-    // Keep the marker centred in the mini-map (with some damping after 10 steps)
-    if (routeCoords.length <= 10) {
-      miniMap.setCenter(latLng);
+  if (routePolyline) routePolyline.setLatLngs(routeCoords);
+  if (routeMarker && miniMap) {
+    routeMarker.setLatLng(latLng);
+    if (routeCoords.length <= 3) {
+      miniMap.setView(latLng, 13);
     } else {
       miniMap.panTo(latLng);
     }
   }
 }
 
-/* ── Reverse geocoding ────────────────────────────────────────────────── */
+/* ── Reverse geocoding (Nominatim / OpenStreetMap) ────────────────────── */
 
-let geocodeThrottle = 0;
+async function reverseGeocode(lat, lng) {
+  // Respect Nominatim's usage policy: max 1 request / second
+  const now = Date.now();
+  if (now - lastGeocodeTime < 3000) return;
+  lastGeocodeTime = now;
 
-function reverseGeocode(latLng) {
-  // Throttle – geocode at most every 3 hops to stay well within quota
-  geocodeThrottle++;
-  if (geocodeThrottle % 3 !== 1) return;
+  try {
+    const url  = `${NOMINATIM_BASE}/reverse?lat=${lat}&lon=${lng}&format=json`;
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    if (!resp.ok) return;
+    const data = await resp.json();
 
-  geocoder.geocode({ location: latLng }, (results, status) => {
-    if (status !== 'OK' || !results || results.length === 0) return;
-
-    let locality    = '';
-    let adminArea   = '';
-    let country     = '';
-    let countryCode = '';
-
-    for (const comp of results[0].address_components) {
-      if (comp.types.includes('locality'))                locality    = comp.long_name;
-      if (comp.types.includes('administrative_area_level_1')) adminArea = comp.short_name;
-      if (comp.types.includes('country')) {
-        country     = comp.long_name;
-        countryCode = comp.short_name;
-      }
-    }
+    const addr        = data.address || {};
+    const locality    = addr.city || addr.town || addr.village || addr.hamlet || addr.county || '';
+    const region      = addr.state || addr.region || '';
+    const country     = addr.country || '';
+    const countryCode = (addr.country_code || '').toUpperCase();
 
     locationName.classList.remove('loading');
-    locationName.textContent = locality || adminArea || country || 'Unknown location';
-    locationSub.textContent  = [adminArea, country].filter(Boolean).join(', ');
+    locationName.textContent = locality || region || country || 'Unknown location';
+    locationSub.textContent  = [region, country].filter(Boolean).join(', ');
     locationFlag.textContent = countryCodeToFlag(countryCode);
-  });
+  } catch (err) {
+    console.error('Geocode error:', err);
+  }
 }
 
 /** Convert ISO 3166-1 alpha-2 country code to flag emoji */
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return '🌍';
   return [...code.toUpperCase()].map(c => String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65)).join('');
-}
-
-/* ── Dark map style for mini-map ──────────────────────────────────────── */
-
-function darkMapStyles() {
-  return [
-    { elementType: 'geometry',        stylers: [{ color: '#1a1a2e' }] },
-    { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
-    { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
-    { featureType: 'road',             elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
-    { featureType: 'road',             elementType: 'geometry.stroke', stylers: [{ color: '#255763' }] },
-    { featureType: 'road.highway',     elementType: 'geometry', stylers: [{ color: '#2c6675' }] },
-    { featureType: 'water',            elementType: 'geometry', stylers: [{ color: '#0d324d' }] },
-    { featureType: 'poi',              stylers: [{ visibility: 'off' }] },
-    { featureType: 'transit',          stylers: [{ visibility: 'off' }] },
-    { featureType: 'administrative.land_parcel', stylers: [{ visibility: 'off' }] },
-  ];
 }
