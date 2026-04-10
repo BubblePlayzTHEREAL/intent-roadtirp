@@ -221,7 +221,8 @@ async function startTrip() {
 
   try {
     const image = await findNearbyImage(start.lat, start.lng, myTripId);
-    if (!image || myTripId !== tripId) return;
+    if (myTripId !== tripId) return;
+    if (!image) { setTimeout(startTrip, 1000); return; }
 
     sequenceImages = await getSequenceImages(image.sequence, myTripId);
     if (myTripId !== tripId) return;
@@ -245,7 +246,7 @@ async function startTrip() {
 
 /* ── Mapillary API helpers ────────────────────────────────────────────── */
 
-async function mapillaryFetch(url, myTripId) {
+async function mapillaryFetch(url, myTripId, retries = 3) {
   const resp = await fetch(url);
 
   if (resp.status === 401) {
@@ -257,6 +258,12 @@ async function mapillaryFetch(url, myTripId) {
       startBtn.textContent = 'Start Trip 🛣️';
     }
     throw new Error('Unauthorized');
+  }
+
+  // Retry transient server errors with exponential backoff
+  if (resp.status >= 500 && retries > 0) {
+    await new Promise(r => setTimeout(r, (4 - retries) * 1000));
+    return mapillaryFetch(url, myTripId, retries - 1);
   }
 
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
