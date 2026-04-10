@@ -1,0 +1,17 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+
+# Dependency dirs
+node_modules/
+
+# Build / dist
+dist/
+build/
+
+# Logs
+*.log
