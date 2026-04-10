@@ -357,7 +357,7 @@ function updateRoute(latLng) {
   if (routePolyline) routePolyline.setLatLngs(routeCoords);
   if (routeMarker && miniMap) {
     routeMarker.setLatLng(latLng);
-    if (routeCoords.length <= 3) {
+    if (routeCoords.length === 1) {
       miniMap.setView(latLng, 13);
     } else {
       miniMap.panTo(latLng);
@@ -368,7 +368,7 @@ function updateRoute(latLng) {
 /* ── Reverse geocoding (Nominatim / OpenStreetMap) ────────────────────── */
 
 async function reverseGeocode(lat, lng) {
-  // Respect Nominatim's usage policy: max 1 request / second
+  // Respect Nominatim's usage policy: max 1 request per second; we use 3 s to be safe
   const now = Date.now();
   if (now - lastGeocodeTime < 3000) return;
   lastGeocodeTime = now;

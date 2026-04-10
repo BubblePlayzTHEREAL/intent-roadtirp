@@ -122,9 +122,14 @@ html, body {
   background-color: #1a1a2e;
 }
 
-/* Leaflet attribution override for dark theme */
-.leaflet-container .leaflet-control-attribution {
-  display: none;
+/* Leaflet attribution – styled to fit dark theme (required by OSM/CARTO terms) */
+.leaflet-control-attribution {
+  background: rgba(0, 0, 0, 0.45) !important;
+  color: #666 !important;
+  font-size: 0.65rem !important;
+}
+.leaflet-control-attribution a {
+  color: #888 !important;
 }
 
 /* ── Location overlay (top-left) ─────────────────────────────────────── */
